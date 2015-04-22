@@ -1,0 +1,143 @@
+---
+title: "Machine Learning Course Project"
+author: "limrock"
+date: "April 19, 2015"
+output: html_document
+---
+        
+        This is my attempt at the Machine Learning course project. I have split the task into a number of sections:
+        
+- Library and data loading
+- Cleaning the data
+- Partitioning
+- Model fitting
+- Prediction & Evaluation
+- Final submission
+
+
+# Load libraries
+I'm using the caret package to do all my ML work. I'm also loading the parallel library to help with the workload, as well as ggplot2 and gridExtra for some plots.
+```{r load_libraries}
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(gridExtra))
+library(parallel)
+library(ggplot2)
+```
+
+
+# Load data
+Depending on whether data is downloaded previously, I fetch the data from the urls and load them up.
+```{r load_data}
+if(!file.exists("pml-training.csv")) {
+        trainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+        download.file(trainURL, dest="pml-training.csv", method="curl")
+        testURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+        download.file(testURL, dest="pml-testing.csv", method="curl")
+}
+testData <- read.csv("pml-testing.csv", sep=",",header=T, as.is=T)    # test data
+trainData <- read.csv("pml-training.csv",sep=",",header=T, as.is=T) # training data
+```
+
+
+# Clean the data
+On of the most important tand time-consuming steps. Critical to the understanding o fthe project is the data content or lack thereof. A lot of time was wasted trying to model unclean data or data forms in the wrong class type.
+```{r clean_data}
+# convert any empty data to NA, then remove all NA.
+trainData[trainData==""] <- NA
+testData[testData == ""] <- NA
+trainData <- trainData[, colSums(is.na(trainData)) == 0] 
+testData <- testData[, colSums(is.na(testData)) == 0] 
+# remove first 7 cols of user info
+trainData <- trainData[,-c(1:7)]   
+testData <- testData[,-c(1:7)]
+# finally set all variables to right class
+classe <- as.factor(trainData$classe)
+predictors <- as.data.frame(lapply(trainData[,1:52], as.numeric))
+trainData <- cbind(predictors,classe)
+```
+
+
+# Partition training data into train & validation sets
+I decided to partition my training set into both a training and a validation set. The validation is optional but I figured the training set is big enough anyways.
+```{r partition_training}
+# I'm splitting the training set into 2 parts: 
+# - the first to train the various models
+# - the second to evaluate them 
+trainIndex = createDataPartition(trainData$classe, p = 0.6,list=FALSE)
+training.data = trainData[trainIndex,]
+training.eval = trainData[-trainIndex,]
+```
+
+
+# Model fitting
+I selected 2 prediction models - boosting and random forest - to predict the outcomes for this project. Both types are available to run in the caret package. I tried to keep the parameters as similar as possible in both to compare later. I set a seed & optimise for all available cores. 
+```{r test_models, message=F}
+options(mc.cores=detectCores())
+set.seed(1973)
+# 1. boosting
+model1 <- train(classe ~ ., method="gbm", data=training.data, verbose=F, 
+                trControl = trainControl(method = "cv", number = 10))
+# 2. random forest
+model2 <- train(classe ~ ., method="rf", data=training.data, importance=T, 
+                trControl = trainControl(method = "cv", number = 10))
+
+plot1 <- plot(model1, main="Boosting (GBM)")
+plot2 <- plot(model2, main="Random Forest")
+grid.arrange(plot1,plot2,ncol=2, main="Simple plots of model performance")
+```
+
+
+# A couple of plots to indicated the variables driving the models
+With the random forest, the importance of each variable is split by classe. Boosting gives the overall importance. Only 12 variables exert agreater than 10% influence on the prediction of the overall outcome.
+```{r plot_variable_importance}
+varImpObj1 <- varImp(model1)
+imp1 <- plot(varImpObj1,main="Boosting")
+varImpObj2 <- varImp(model2)
+imp2 <- plot(varImpObj2,main="RandomForest")
+grid.arrange(imp1,imp2,ncol=2, main="Variable Importance Of Prediction Models")
+```
+
+
+# Prediction for the training set & validation sets.
+Based on the outcome of the prediction of both models, I chose to go with the random forest model as it gave better training accuracy (1 v 0.97). Also the confusion Matrix results for the validation sets displayed better kappa outcomes using random forest (0.99 v 0.95). The OOB estimate of  error rate was 0.88%. These validation results led me to believe the training model was not overfitting.
+```{r train_predict_validate}
+predict1 <- predict(model1, newdata=training.data)
+confusionMatrix(predict1,training.data$classe)
+predict2 <- predict(model2, newdata=training.data)
+confusionMatrix(predict2,training.data$classe)
+
+# Now for the validation set.
+eval1 <- predict(model1, newdata=training.eval)
+confusionMatrix(eval1,training.eval$classe)
+eval2 <- predict(model2, newdata=training.eval)
+confusionMatrix(eval2,training.eval$classe)
+```
+
+
+# Out-Of-Sample Error
+OOS error should be less than 1% if the accuracy in the second validation model is true (99%). Yes, the calculated value is 0.65%.
+```{r out_of_sample_error}
+OOS_Error.accuracy <- sum(eval2 == training.eval$classe)/length(eval2)
+OOS_Error <- (1 - OOS_Error.accuracy)*100
+OOS_Erros_Percent <- paste("Out Of Sample Error: ",round(OOS_Error, digits = 2), "%",sep="")
+print(OOS_Erros_Percent)
+```
+
+
+# Project Submission
+```{r project_submission}
+pml_write_files = function(x){
+        n = length(x)
+        for(i in 1:n){
+                filename = paste0("problem_id_",i,".txt")
+                write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+        }
+}
+
+# Answers
+feature_set <- colnames(predictors)
+tesData <- testData[,colnames(feature_set)]
+answers <- predict(model2, newdata=testData)
+
+pml_write_files(answers)
+```
